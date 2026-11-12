@@ -1,0 +1,16 @@
+plugins { id "com.android.application" }
+
+android {
+    namespace "ai.storyteller.gridcraft"
+    compileSdk 34
+    defaultConfig {
+        applicationId "ai.storyteller.gridcraft"
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName "0.19.1-android"
+        ndk { abiFilters "arm64-v8a", "x86_64" }
+    }
+    // jniLibs/ is filled by `cargo ndk` (see .github/workflows/android.yml).
+    packagingOptions { jniLibs { useLegacyPackaging true } }
+}

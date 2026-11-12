@@ -8,3 +8,9 @@ plan/
 /.claude/
 /target-*/
 /craft-fonts/
+
+# Android build output
+apps/gridcraft-android/android/app/src/main/jniLibs/
+apps/gridcraft-android/android/app/build/
+apps/gridcraft-android/android/.gradle/
+apps/gridcraft-android/android/build/

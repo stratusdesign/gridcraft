@@ -4,10 +4,12 @@
 //! runner (winit NativeActivity, wgpu on Vulkan or GLES). Build with `cargo apk build --release
 //! -p gridcraft-android` (see `.github/workflows/android.yml`).
 //!
-//! First cut: no system file picker yet (Android only returns picker results to a Java
-//! activity). Preferences live in the app's private storage.
+//! Open and Save use the system file picker (`files`). Preferences live in the app's private
+//! storage.
 #![cfg(target_os = "android")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+mod files;
 
 use std::path::PathBuf;
 
@@ -16,10 +18,11 @@ use gridcraft_engine::Session;
 use gridcraft_ui_egui::doc_windows::DocWindows;
 use gridcraft_ui_egui::{Services, SheetApp};
 
-struct App(SheetApp, DocWindows, Option<PathBuf>);
+struct App(SheetApp, DocWindows, Option<PathBuf>, files::Files);
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.3.logic(&mut self.0);
         self.0.logic(ctx);
         self.1.logic(&mut self.0, ctx);
     }
@@ -64,7 +67,12 @@ fn load_prefs(app: &mut SheetApp, dir: Option<&std::path::Path>) {
 fn android_main(android_app: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("gridcraft"));
     let prefs_dir = android_app.internal_data_path();
-    let mut app = SheetApp::new(Session::new(), Services::default());
+    let services = Services {
+        open_async: Some(Box::new(files::pick_open)),
+        download: Some(Box::new(files::save_bytes)),
+        ..Default::default()
+    };
+    let mut app = SheetApp::new(Session::new(), services);
     load_prefs(&mut app, prefs_dir.as_deref());
     if app.session.documents().is_empty() {
         app.session.new_workbook();
@@ -82,8 +90,9 @@ fn android_main(android_app: AndroidApp) {
                 return Err("the app was already created".into());
             };
             SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
+            files::set_context(&cc.egui_ctx);
             let windows = DocWindows::new(&mut app, window_builder.clone(), true);
-            Ok(Box::new(App(app, windows, prefs_dir.clone())))
+            Ok(Box::new(App(app, windows, prefs_dir.clone(), files::Files::new(prefs_dir.clone()))))
         }),
     );
     if let Err(e) = result {
