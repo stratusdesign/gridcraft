@@ -39,3 +39,9 @@ resizeable_activity = true
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MANAGE_EXTERNAL_STORAGE"
+
+# The workflow creates this throwaway key on each build (nothing secret is stored). A new key per
+# build means a new APK installs over an old one only after uninstalling it.
+[package.metadata.android.signing.release]
+path = "../../target/release.keystore"
+keystore_password = "android"

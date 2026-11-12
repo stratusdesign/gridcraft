@@ -26,6 +26,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-apk
         run: cargo install cargo-apk --locked
+      - name: Create a throwaway signing key
+        run: keytool -genkeypair -keystore target/release.keystore -alias gridcraft -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=GridCraft Android" -noprompt
       - name: Build APK
         working-directory: apps/gridcraft-android
         run: |
