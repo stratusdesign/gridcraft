@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use eframe::winit::platform::android::activity::AndroidApp;
+use winit::platform::android::activity::AndroidApp;
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::doc_windows::DocWindows;
 use gridcraft_ui_egui::{Services, SheetApp};
