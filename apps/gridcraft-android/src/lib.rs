@@ -15,25 +15,24 @@ use std::path::PathBuf;
 
 use winit::platform::android::activity::AndroidApp;
 use gridcraft_engine::Session;
-use gridcraft_ui_egui::doc_windows::DocWindows;
 use gridcraft_ui_egui::{Services, SheetApp};
 
-struct App(SheetApp, DocWindows, Option<PathBuf>, files::Files);
+/// One window holding every document, as on the web: Android has no separate desktop windows.
+struct App(SheetApp, Option<PathBuf>, files::Files);
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.3.logic(&mut self.0);
+        self.2.logic(&mut self.0);
         self.0.logic(ctx);
-        self.1.logic(&mut self.0, ctx);
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.1.show(&mut self.0, ui);
+        self.0.ui(ui);
     }
     fn on_exit(&mut self) {
-        save_prefs(&self.0, self.2.as_deref());
+        save_prefs(&self.0, self.1.as_deref());
     }
 }
 
@@ -67,6 +66,7 @@ fn load_prefs(app: &mut SheetApp, dir: Option<&std::path::Path>) {
 fn android_main(android_app: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("gridcraft"));
     let prefs_dir = android_app.internal_data_path();
+    files::set_activity(&android_app);
     let services = Services {
         open_async: Some(Box::new(files::pick_open)),
         download: Some(Box::new(files::save_bytes)),
@@ -79,7 +79,6 @@ fn android_main(android_app: AndroidApp) {
     }
     app.after_engine();
     let viewport = egui::ViewportBuilder::default().with_title("GridCraft");
-    let window_builder = viewport.clone();
     let options = eframe::NativeOptions { viewport, android_app: Some(android_app), ..Default::default() };
     let pending = std::cell::Cell::new(Some(app));
     let result = eframe::run_native(
@@ -91,8 +90,7 @@ fn android_main(android_app: AndroidApp) {
             };
             SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
             files::set_context(&cc.egui_ctx);
-            let windows = DocWindows::new(&mut app, window_builder.clone(), true);
-            Ok(Box::new(App(app, windows, prefs_dir.clone(), files::Files::new(prefs_dir.clone()))))
+            Ok(Box::new(App(app, prefs_dir.clone(), files::Files::new(prefs_dir.clone()))))
         }),
     );
     if let Err(e) = result {

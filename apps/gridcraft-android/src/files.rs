@@ -26,6 +26,14 @@ static PICKED: Mutex<Vec<(jint, String, String)>> = Mutex::new(Vec::new());
 /// What a Save As / export is waiting to write: (file name, bytes).
 static PENDING_SAVE: Mutex<Option<(String, Vec<u8>)>> = Mutex::new(None);
 static CTX: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+/// The Java activity (GridcraftActivity). ndk_context holds the Application instead, which has
+/// none of the picker methods.
+static ACTIVITY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn set_activity(app: &winit::platform::android::activity::AndroidApp) {
+    // Set on every start: android_main can run again with a new activity.
+    ACTIVITY.store(app.activity_as_ptr() as usize, std::sync::atomic::Ordering::SeqCst);
+}
 
 pub fn set_context(ctx: &egui::Context) {
     let _ = CTX.set(ctx.clone());
@@ -72,8 +80,12 @@ fn call_activity(method: &str, sig: &str, args: &[JValue]) -> Option<String> {
     // SAFETY: android-activity fills ndk_context with the process's JavaVM and the activity.
     let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
     let mut env = vm.attach_current_thread_permanently().ok()?;
-    // SAFETY: the activity object stays valid for the life of the app.
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let activity = ACTIVITY.load(std::sync::atomic::Ordering::SeqCst);
+    if activity == 0 {
+        return None;
+    }
+    // SAFETY: NativeActivity holds this global reference to the activity for the life of the app.
+    let activity = unsafe { JObject::from_raw(activity as jni::sys::jobject) };
     let r = env.call_method(&activity, method, sig, args);
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_describe();
