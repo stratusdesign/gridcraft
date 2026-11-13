@@ -4,6 +4,7 @@ import android.app.NativeActivity;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 
 import java.io.FileInputStream;
@@ -54,6 +55,7 @@ public class GridcraftActivity extends NativeActivity {
             i.setType("*/*");
             i.putExtra(Intent.EXTRA_MIME_TYPES, TYPES);
             i.addFlags(RW | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startInLastFolder(i);
             startActivityForResult(i, OPEN);
         });
     }
@@ -65,6 +67,7 @@ public class GridcraftActivity extends NativeActivity {
             i.setType(mimeFor(name));
             i.putExtra(Intent.EXTRA_TITLE, name);
             i.addFlags(RW | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startInLastFolder(i);
             startActivityForResult(i, SAVE);
         });
     }
@@ -81,8 +84,15 @@ public class GridcraftActivity extends NativeActivity {
             } catch (Exception ignored) {
             }
             name = displayName(uri);
+            getPreferences(MODE_PRIVATE).edit().putString("lastPicked", uri.toString()).apply();
         }
         nativePicked(request, uri == null ? null : uri.toString(), name);
+    }
+
+    /** The picker opens where the last picked file was (Documents, Drive, …), not in Downloads. */
+    void startInLastFolder(Intent i) {
+        String last = getPreferences(MODE_PRIVATE).getString("lastPicked", null);
+        if (last != null) i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(last));
     }
 
     String displayName(Uri uri) {
