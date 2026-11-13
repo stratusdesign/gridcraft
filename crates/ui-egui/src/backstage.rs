@@ -20,6 +20,7 @@ use crate::i18n::{self, Language};
 use crate::icons::{self, Icon};
 use crate::theme::{self, Tokens};
 
+mod browser;
 mod options;
 mod print;
 
@@ -128,6 +129,8 @@ pub struct Backstage {
     pub save_format: &'static str,
     /// Home and Open: when the recent workbooks were last changed.
     recent: RecentFiles,
+    /// Android's Open and Save As: the folder browser.
+    browser: browser::State,
 }
 
 /// Save As file types: (extension, label). The first is the workbook itself; the others are
@@ -147,6 +150,7 @@ impl Backstage {
             preview: None,
             save_format: "xlsx",
             recent: RecentFiles::default(),
+            browser: browser::State::default(),
         }
     }
 }
@@ -573,6 +577,11 @@ fn new_page(app: &mut SheetApp, ui: &mut Ui, out: &mut Outcome) {
 
 fn open_page(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome) {
     let lang = app.ui.language;
+    if app.services.folders.is_some() {
+        let fmt = bs.save_format;
+        browser::show(app, ui, &mut bs.browser, fmt, out, false);
+        return;
+    }
     if square_button(ui, Icon::OpenFolder, lang.tr("Browse…")).clicked() {
         let before = app.session.active().map(|d| d.uid);
         app.open_dialog("open", json!({}));
@@ -695,6 +704,13 @@ fn save_as(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcom
             .labelled_by(label.id);
     });
     ui.add_space(14.0);
+    if app.services.folders.is_some() {
+        let fmt = bs.save_format;
+        browser::show(app, ui, &mut bs.browser, fmt, out, true);
+        ui.add_space(18.0);
+        dim(ui, lang.tr("A CSV file, web page or PDF is a copy: the workbook keeps its own file."));
+        return;
+    }
     // Desktop: the system Save dialog. Web: the file downloads.
     let web = app.services.pick_save.is_none() && app.services.download.is_some();
     let label = if web { format!("{} (.{fmt})", lang.tr("Download")) } else { lang.tr("Browse…").to_string() };
@@ -745,6 +761,18 @@ pub fn export_as(app: &mut SheetApp, fmt: &str) -> bool {
         "html" => "file.exportHtml",
         _ => return false,
     };
+    // Android: the Save As page's folder browser, set to this type.
+    if app.services.folders.is_some() {
+        app.open_backstage(Page::SaveAs);
+        if let Some(bs) = app.backstage.as_mut() {
+            bs.save_format = match fmt {
+                "pdf" => "pdf",
+                "csv" => "csv",
+                _ => "html",
+            };
+        }
+        return false;
+    }
     let title = app.session.active().map(|d| d.display_title()).unwrap_or_else(|| "Book1".into());
     let stem = std::path::Path::new(&title).file_stem().and_then(std::ffi::OsStr::to_str).unwrap_or("Book1").to_string();
     if let Some(pick) = &app.services.pick_save {

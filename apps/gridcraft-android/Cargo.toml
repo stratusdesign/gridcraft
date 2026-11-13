@@ -16,6 +16,7 @@ gridcraft-engine = { workspace = true }
 gridcraft-ui-egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
 egui = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 android_logger = "0.15"

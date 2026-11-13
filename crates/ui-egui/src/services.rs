@@ -44,6 +44,37 @@ pub struct Services {
     /// Web: hand PDF bytes to the browser's print flow directly (no download,
     /// no intermediate file) — opens the system print dialog on that PDF.
     pub print: Option<PrintPdf>,
+    /// Android: GridCraft's own folder browser on the Open and Save As pages.
+    pub folders: Option<Box<dyn Folders>>,
+}
+
+/// A location, folder or file in a [`Folders`] browser. `id` means something only to the host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderItem {
+    pub id: String,
+    pub name: String,
+    /// Where it is, for locations and recent folders ("My files › Documents").
+    pub detail: String,
+    pub folder: bool,
+}
+
+/// Android: the folders the user let GridCraft use, browsed on the Open and Save As pages
+/// instead of a system picker (ChromeOS shows its own picker only for Open).
+pub trait Folders {
+    /// The locations the user let GridCraft use.
+    fn places(&self) -> Vec<FolderItem>;
+    /// Folders opened from or saved to, newest first.
+    fn recent(&self) -> Vec<FolderItem>;
+    /// Asks the user for another location; it appears in `places` once chosen.
+    fn add_place(&self);
+    /// A folder's subfolders and files.
+    fn list(&self, folder: &str) -> Result<Vec<FolderItem>, String>;
+    /// A local path to open `file` (in `folder`, called `folder_name`) from; saving it saves the
+    /// file.
+    fn open(&self, folder: &str, folder_name: &str, file: &FolderItem) -> Result<String, String>;
+    /// A local path to save `name` into `folder` at; what is written there goes to the folder.
+    /// `existing` is the file of that name to replace.
+    fn save(&self, folder: &str, folder_name: &str, name: &str, existing: Option<&FolderItem>) -> Result<String, String>;
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).

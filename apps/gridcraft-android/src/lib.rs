@@ -11,18 +11,20 @@
 
 mod files;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use winit::platform::android::activity::AndroidApp;
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Services, SheetApp};
 
 /// One window holding every document, as on the web: Android has no separate desktop windows.
-struct App(SheetApp, Option<PathBuf>, files::Files);
+struct App(SheetApp, Option<PathBuf>, Rc<RefCell<files::Files>>);
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.2.logic(&mut self.0);
+        self.2.borrow_mut().logic(&mut self.0);
         self.0.logic(ctx);
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -67,7 +69,9 @@ fn android_main(android_app: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("gridcraft"));
     let prefs_dir = android_app.internal_data_path();
     files::set_activity(&android_app);
+    let files = Rc::new(RefCell::new(files::Files::new(prefs_dir.clone())));
     let services = Services {
+        folders: Some(Box::new(files::AndroidFolders(files.clone()))),
         open_async: Some(Box::new(files::pick_open)),
         download: Some(Box::new(files::save_bytes)),
         ..Default::default()
@@ -90,7 +94,7 @@ fn android_main(android_app: AndroidApp) {
             };
             SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
             files::set_context(&cc.egui_ctx);
-            Ok(Box::new(App(app, prefs_dir.clone(), files::Files::new(prefs_dir.clone()))))
+            Ok(Box::new(App(app, prefs_dir.clone(), files.clone())))
         }),
     );
     if let Err(e) = result {

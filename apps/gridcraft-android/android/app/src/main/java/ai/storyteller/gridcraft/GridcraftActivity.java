@@ -26,6 +26,7 @@ public class GridcraftActivity extends NativeActivity {
 
     static final int OPEN = 1;
     static final int SAVE = 2;
+    static final int TREE = 3;
     static final int RW = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
 
     static native void nativePicked(int kind, String uri, String name);
@@ -72,6 +73,65 @@ public class GridcraftActivity extends NativeActivity {
         });
     }
 
+    /** Add a location: the user picks a folder GridCraft may use (My files, Drive, …). */
+    public void pickTree() {
+        runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(RW | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, TREE);
+        });
+    }
+
+    // Folder browsing for GridCraft's own Open and Save As pages. Answers start with '+' (the
+    // value follows) or '!' (an error message follows).
+
+    /** The top folder of a location. */
+    public String rootId(String tree) {
+        try {
+            return "+" + DocumentsContract.getTreeDocumentId(Uri.parse(tree));
+        } catch (Exception e) {
+            return "!" + e.getMessage();
+        }
+    }
+
+    /** A folder's contents: one line per item: id, name, d (folder) or f (file), split by unit separators. */
+    public String list(String tree, String folder) {
+        Uri t = Uri.parse(tree);
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(t, folder);
+        String[] cols = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        };
+        StringBuilder out = new StringBuilder("+");
+        try (Cursor c = getContentResolver().query(children, cols, null, null, null)) {
+            if (c == null) return "!this folder can't be read";
+            while (c.moveToNext()) {
+                boolean dir = DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2));
+                out.append(c.getString(0)).append('\u001f').append(c.getString(1)).append('\u001f').append(dir ? 'd' : 'f').append('\n');
+            }
+            return out.toString();
+        } catch (Exception e) {
+            return "!" + e.getMessage();
+        }
+    }
+
+    /** The document uri of `doc` inside a location. */
+    public String docUri(String tree, String doc) {
+        return DocumentsContract.buildDocumentUriUsingTree(Uri.parse(tree), doc).toString();
+    }
+
+    /** A new file `name` in `folder`; its document uri. */
+    public String create(String tree, String folder, String name) {
+        try {
+            Uri parent = DocumentsContract.buildDocumentUriUsingTree(Uri.parse(tree), folder);
+            Uri made = DocumentsContract.createDocument(getContentResolver(), parent, mimeFor(name), name);
+            return made == null ? "!the file couldn't be made" : "+" + made;
+        } catch (Exception e) {
+            return "!" + e.getMessage();
+        }
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
@@ -83,8 +143,8 @@ public class GridcraftActivity extends NativeActivity {
                 getContentResolver().takePersistableUriPermission(uri, data.getFlags() & RW);
             } catch (Exception ignored) {
             }
-            name = displayName(uri);
-            getPreferences(MODE_PRIVATE).edit().putString("lastPicked", uri.toString()).apply();
+            name = request == TREE ? treeName(uri) : displayName(uri);
+            if (request != TREE) getPreferences(MODE_PRIVATE).edit().putString("lastPicked", uri.toString()).apply();
         }
         nativePicked(request, uri == null ? null : uri.toString(), name);
     }
@@ -93,6 +153,14 @@ public class GridcraftActivity extends NativeActivity {
     void startInLastFolder(Intent i) {
         String last = getPreferences(MODE_PRIVATE).getString("lastPicked", null);
         if (last != null) i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(last));
+    }
+
+    String treeName(Uri tree) {
+        try {
+            return displayName(DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)));
+        } catch (Exception e) {
+            return "Folder";
+        }
     }
 
     String displayName(Uri uri) {

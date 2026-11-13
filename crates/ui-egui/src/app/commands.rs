@@ -386,6 +386,10 @@ impl SheetApp {
             return;
         }
         match name {
+            // Android: GridCraft's own folder browser on the File pages.
+            "open" | "saveAs" if self.services.folders.is_some() => {
+                self.open_backstage(if name == "open" { backstage::Page::Open } else { backstage::Page::SaveAs });
+            }
             "open" => {
                 if let Some(start) = &self.services.open_async {
                     start();

@@ -7,19 +7,23 @@
 //! copy is copied straight back to the picked document. The copy→document map is kept on disk,
 //! so a document from Recent still saves back after a restart.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
-use gridcraft_ui_egui::SheetApp;
+use gridcraft_ui_egui::{FolderItem, Folders, SheetApp};
 use jni::objects::{JClass, JObject, JString, JValue};
 use jni::sys::jint;
 use jni::{JNIEnv, JavaVM};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const OPEN: jint = 1;
 const SAVE: jint = 2;
+const TREE: jint = 3;
 
 /// Picker answers waiting for the next frame: (kind, document uri, display name).
 static PICKED: Mutex<Vec<(jint, String, String)>> = Mutex::new(Vec::new());
@@ -74,50 +78,60 @@ pub extern "system" fn Java_ai_storyteller_gridcraft_GridcraftActivity_nativePic
     }
 }
 
-/// Calls a method on the activity; `None` when JNI failed (logged).
-fn call_activity(method: &str, sig: &str, args: &[JValue]) -> Option<String> {
-    let ctx = ndk_context::android_context();
-    // SAFETY: android-activity fills ndk_context with the process's JavaVM and the activity.
-    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
-    let mut env = vm.attach_current_thread_permanently().ok()?;
+/// Calls a method of the activity with string arguments; its string answer (empty for none).
+/// `None` when the call failed (logged). Every Java reference made is freed before returning.
+fn call(method: &str, sig: &str, strings: &[&str]) -> Option<String> {
     let activity = ACTIVITY.load(std::sync::atomic::Ordering::SeqCst);
     if activity == 0 {
         return None;
     }
-    // SAFETY: NativeActivity holds this global reference to the activity for the life of the app.
-    let activity = unsafe { JObject::from_raw(activity as jni::sys::jobject) };
-    let r = env.call_method(&activity, method, sig, args);
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_describe();
-        let _ = env.exception_clear();
-    }
-    match r {
-        Ok(v) => match v.l() {
-            Ok(obj) if !obj.is_null() => env.get_string(&JString::from(obj)).ok().map(String::from),
-            _ => Some(String::new()),
-        },
-        Err(e) => {
-            log::error!("{method}: {e}");
-            None
+    let ctx = ndk_context::android_context();
+    // SAFETY: android-activity fills ndk_context with the process's JavaVM.
+    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread_permanently().ok()?;
+    let r = env.with_local_frame(16, |env| -> jni::errors::Result<Option<String>> {
+        // SAFETY: NativeActivity holds this global reference to the activity for the life of the app.
+        let activity = unsafe { JObject::from_raw(activity as jni::sys::jobject) };
+        let mut objs = Vec::new();
+        for s in strings {
+            objs.push(JObject::from(env.new_string(s)?));
         }
-    }
+        let args: Vec<JValue> = objs.iter().map(JValue::Object).collect();
+        let v = match env.call_method(&activity, method, sig, &args) {
+            Ok(v) => v,
+            Err(e) => {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!("{method}: {e}");
+                return Ok(None);
+            }
+        };
+        Ok(Some(match v.l() {
+            Ok(obj) if !obj.is_null() => env.get_string(&JString::from(obj)).map(String::from).unwrap_or_default(),
+            _ => String::new(),
+        }))
+    });
+    r.ok().flatten()
 }
 
-fn with_strings<R>(strings: &[&str], f: impl FnOnce(&[JValue]) -> R) -> Option<R> {
-    let ctx = ndk_context::android_context();
-    // SAFETY: as in `call_activity`.
-    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
-    let env = vm.attach_current_thread_permanently().ok()?;
-    let objs: Vec<JObject> = strings.iter().filter_map(|s| env.new_string(s).ok().map(JObject::from)).collect();
-    if objs.len() != strings.len() {
-        return None;
+fn sig(args: usize, returns: bool) -> String {
+    format!("({}){}", "Ljava/lang/String;".repeat(args), if returns { "Ljava/lang/String;" } else { "V" })
+}
+
+/// A call whose answer starts with '+' (the value follows) or '!' (an error follows).
+fn ask(method: &str, strings: &[&str]) -> Result<String, String> {
+    let a = call(method, &sig(strings.len(), true), strings).ok_or("Android didn't answer")?;
+    match a.split_at_checked(1) {
+        Some(("+", v)) => Ok(v.to_string()),
+        Some(("!", e)) => Err(e.to_string()),
+        _ => Err("Android gave no answer".into()),
     }
-    let args: Vec<JValue> = objs.iter().map(JValue::Object).collect();
-    Some(f(&args))
 }
 
 pub fn pick_open() {
-    call_activity("pickOpen", "()V", &[]);
+    call("pickOpen", "()V", &[]);
 }
 
 /// The `download` service: remember the bytes, ask where to save them.
@@ -125,11 +139,11 @@ pub fn save_bytes(name: &str, bytes: &[u8]) {
     if let Ok(mut p) = PENDING_SAVE.lock() {
         *p = Some((name.to_string(), bytes.to_vec()));
     }
-    with_strings(&[name], |args| call_activity("pickSave", "(Ljava/lang/String;)V", args));
+    call("pickSave", &sig(1, false), &[name]);
 }
 
 fn copy(method: &str, a: &str, b: &str) -> Result<(), String> {
-    match with_strings(&[a, b], |args| call_activity(method, "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", args)).flatten() {
+    match call(method, &sig(2, true), &[a, b]) {
         Some(e) if e.is_empty() => Ok(()),
         Some(e) => Err(e),
         None => Err("Android didn't answer".into()),
@@ -140,9 +154,43 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// Working copies and the documents they belong to.
+/// A location the user let GridCraft use (a folder tree), or a folder in one used recently.
+#[derive(Clone, Serialize, Deserialize)]
+struct Place {
+    tree: String,
+    /// The folder's document id inside `tree` (for a location, its top folder).
+    doc: String,
+    name: String,
+    /// For a recent folder: the location it is in.
+    #[serde(default)]
+    location: String,
+}
+
+impl Place {
+    fn item(&self) -> FolderItem {
+        FolderItem { id: join(&self.tree, &self.doc), name: self.name.clone(), detail: self.location.clone(), folder: true }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Places {
+    places: Vec<Place>,
+    recent: Vec<Place>,
+}
+
+/// Browser ids carry the location and the document: `tree` + unit separator + `doc`.
+fn join(tree: &str, doc: &str) -> String {
+    format!("{tree}\u{1f}{doc}")
+}
+
+fn split(id: &str) -> Result<(&str, &str), String> {
+    id.split_once('\u{1f}').ok_or_else(|| "unknown folder".to_string())
+}
+
+/// Working copies and the documents they belong to, and the locations GridCraft may browse.
 pub struct Files {
     dir: Option<PathBuf>,
+    places: Places,
     /// working copy path → document uri (persisted in `docs.json`)
     docs: HashMap<String, String>,
     /// working copy path → modification time last copied back
@@ -156,7 +204,9 @@ impl Files {
         let docs: HashMap<String, String> =
             dir.as_ref().and_then(|d| std::fs::read(d.join("docs.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let synced = docs.keys().map(|p| (p.clone(), mtime(Path::new(p)))).collect();
-        Files { dir, docs, synced, last_check: Instant::now() }
+        let places =
+            dir.as_ref().and_then(|d| std::fs::read(d.join("places.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Files { dir, places, docs, synced, last_check: Instant::now() }
     }
 
     fn store(&self) {
@@ -166,6 +216,28 @@ impl Files {
             let _ = std::fs::create_dir_all(d);
             let _ = std::fs::write(d.join("docs.json"), b);
         }
+        if let Some(d) = &self.dir
+            && let Ok(b) = serde_json::to_vec_pretty(&self.places)
+        {
+            let _ = std::fs::write(d.join("places.json"), b);
+        }
+    }
+
+    /// Puts a folder at the top of the recent folders.
+    fn used(&mut self, tree: &str, doc: &str, name: &str) {
+        let location = self.places.places.iter().find(|p| p.tree == tree).map(|p| p.name.clone()).unwrap_or_default();
+        self.places.recent.retain(|p| !(p.tree == tree && p.doc == doc));
+        self.places.recent.insert(0, Place { tree: tree.into(), doc: doc.into(), name: name.into(), location });
+        self.places.recent.truncate(8);
+    }
+
+    /// Ties the working copy for `uri` to it; the next check copies whatever is written there.
+    fn track(&mut self, uri: &str, name: &str) -> Result<PathBuf, String> {
+        let path = self.copy_path(uri, name).ok_or("no room for a working copy")?;
+        let p = path.to_string_lossy().into_owned();
+        self.docs.insert(p.clone(), uri.to_string());
+        self.synced.insert(p, None);
+        Ok(path)
     }
 
     /// A working copy path for `uri`, named like the document.
@@ -198,6 +270,13 @@ impl Files {
     }
 
     fn picked(&mut self, app: &mut SheetApp, kind: jint, uri: &str, name: &str) -> Result<(), String> {
+        if kind == TREE {
+            let doc = ask("rootId", &[uri])?;
+            self.places.places.retain(|p| p.tree != uri);
+            self.places.places.push(Place { tree: uri.into(), doc, name: name.into(), location: String::new() });
+            self.store();
+            return Ok(());
+        }
         let path = self.copy_path(uri, name).ok_or("no room for a working copy")?;
         let p = path.to_string_lossy().into_owned();
         if kind == OPEN {
@@ -246,5 +325,71 @@ impl Files {
         if let Some(m) = failed {
             app.message = Some(("GridCraft".into(), m));
         }
+    }
+}
+
+fn doc_uri(tree: &str, doc: &str) -> Result<String, String> {
+    call("docUri", &sig(2, true), &[tree, doc]).filter(|u| !u.is_empty()).ok_or_else(|| "Android didn't answer".to_string())
+}
+
+/// The Open and Save As pages' folder browser, over the locations in [`Files`].
+pub struct AndroidFolders(pub Rc<RefCell<Files>>);
+
+impl Folders for AndroidFolders {
+    fn places(&self) -> Vec<FolderItem> {
+        self.0.borrow().places.places.iter().map(Place::item).collect()
+    }
+
+    fn recent(&self) -> Vec<FolderItem> {
+        self.0.borrow().places.recent.iter().map(Place::item).collect()
+    }
+
+    fn add_place(&self) {
+        call("pickTree", "()V", &[]);
+    }
+
+    fn list(&self, folder: &str) -> Result<Vec<FolderItem>, String> {
+        let (tree, doc) = split(folder)?;
+        let lines = ask("list", &[tree, doc])?;
+        Ok(lines
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\u{1f}');
+                let (id, name, kind) = (f.next()?, f.next()?, f.next()?);
+                Some(FolderItem { id: join(tree, id), name: name.into(), detail: String::new(), folder: kind == "d" })
+            })
+            .collect())
+    }
+
+    fn open(&self, folder: &str, folder_name: &str, file: &FolderItem) -> Result<String, String> {
+        let (tree, doc) = split(&file.id)?;
+        let uri = doc_uri(tree, doc)?;
+        let mut files = self.0.borrow_mut();
+        let path = files.copy_path(&uri, &file.name).ok_or("no room for a working copy")?;
+        let p = path.to_string_lossy().into_owned();
+        copy("copyIn", &uri, &p)?;
+        files.docs.insert(p.clone(), uri);
+        files.synced.insert(p.clone(), mtime(&path));
+        if let Ok((t, d)) = split(folder) {
+            files.used(t, d, folder_name);
+        }
+        files.store();
+        Ok(p)
+    }
+
+    fn save(&self, folder: &str, folder_name: &str, name: &str, existing: Option<&FolderItem>) -> Result<String, String> {
+        let (tree, doc) = split(folder)?;
+        let uri = match existing {
+            Some(f) => {
+                let (t, d) = split(&f.id)?;
+                doc_uri(t, d)?
+            }
+            None => ask("create", &[tree, doc, name])?,
+        };
+        let mut files = self.0.borrow_mut();
+        let path = files.track(&uri, name)?;
+        files.used(tree, doc, folder_name);
+        files.store();
+        Ok(path.to_string_lossy().into_owned())
     }
 }
