@@ -191,6 +191,9 @@ fn split(id: &str) -> Result<(&str, &str), String> {
 pub struct Files {
     dir: Option<PathBuf>,
     places: Places,
+    /// Save As working copies not yet in their folder: path → (folder, folder name, file name,
+    /// file to replace).
+    pending: HashMap<String, (String, String, String, Option<String>)>,
     /// working copy path → document uri (persisted in `docs.json`)
     docs: HashMap<String, String>,
     /// working copy path → modification time last copied back
@@ -206,7 +209,7 @@ impl Files {
         let synced = docs.keys().map(|p| (p.clone(), mtime(Path::new(p)))).collect();
         let places =
             dir.as_ref().and_then(|d| std::fs::read(d.join("places.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Files { dir, places, docs, synced, last_check: Instant::now() }
+        Files { dir, places, pending: HashMap::new(), docs, synced, last_check: Instant::now() }
     }
 
     fn store(&self) {
@@ -229,15 +232,6 @@ impl Files {
         self.places.recent.retain(|p| !(p.tree == tree && p.doc == doc));
         self.places.recent.insert(0, Place { tree: tree.into(), doc: doc.into(), name: name.into(), location });
         self.places.recent.truncate(8);
-    }
-
-    /// Ties the working copy for `uri` to it; the next check copies whatever is written there.
-    fn track(&mut self, uri: &str, name: &str) -> Result<PathBuf, String> {
-        let path = self.copy_path(uri, name).ok_or("no room for a working copy")?;
-        let p = path.to_string_lossy().into_owned();
-        self.docs.insert(p.clone(), uri.to_string());
-        self.synced.insert(p, None);
-        Ok(path)
     }
 
     /// A working copy path for `uri`, named like the document.
@@ -305,7 +299,8 @@ impl Files {
         Ok(())
     }
 
-    fn sync_back(&mut self, app: &mut SheetApp) {
+    /// Copies every working copy saved since the last check back to its document.
+    pub fn sync_back(&mut self, app: &mut SheetApp) {
         let mut failed = None;
         for (p, uri) in &self.docs {
             let now = mtime(Path::new(p));
@@ -350,15 +345,8 @@ impl Folders for AndroidFolders {
 
     fn list(&self, folder: &str) -> Result<Vec<FolderItem>, String> {
         let (tree, doc) = split(folder)?;
-        let lines = ask("list", &[tree, doc])?;
-        Ok(lines
-            .lines()
-            .filter_map(|l| {
-                let mut f = l.split('\u{1f}');
-                let (id, name, kind) = (f.next()?, f.next()?, f.next()?);
-                Some(FolderItem { id: join(tree, id), name: name.into(), detail: String::new(), folder: kind == "d" })
-            })
-            .collect())
+        let list: Vec<(String, String, bool)> = serde_json::from_str(&ask("list", &[tree, doc])?).map_err(|e| e.to_string())?;
+        Ok(list.into_iter().map(|(id, name, folder)| FolderItem { id: join(tree, &id), name, detail: String::new(), folder }).collect())
     }
 
     fn open(&self, folder: &str, folder_name: &str, file: &FolderItem) -> Result<String, String> {
@@ -378,18 +366,31 @@ impl Folders for AndroidFolders {
     }
 
     fn save(&self, folder: &str, folder_name: &str, name: &str, existing: Option<&FolderItem>) -> Result<String, String> {
-        let (tree, doc) = split(folder)?;
-        let uri = match existing {
-            Some(f) => {
-                let (t, d) = split(&f.id)?;
+        split(folder)?;
+        let mut files = self.0.borrow_mut();
+        // A fresh working copy; the document is made (or replaced) only once this is written.
+        let path = files.copy_path(&format!("{folder}\u{1f}{name}\u{1f}{:?}", SystemTime::now()), name).ok_or("no room for a working copy")?;
+        let p = path.to_string_lossy().into_owned();
+        files.pending.insert(p.clone(), (folder.to_string(), folder_name.to_string(), name.to_string(), existing.map(|f| f.id.clone())));
+        Ok(p)
+    }
+
+    fn saved(&self, path: &str) -> Result<(), String> {
+        let mut files = self.0.borrow_mut();
+        let (folder, folder_name, name, existing) = files.pending.remove(path).ok_or("nothing to save")?;
+        let (tree, doc) = split(&folder)?;
+        let uri = match &existing {
+            Some(id) => {
+                let (t, d) = split(id)?;
                 doc_uri(t, d)?
             }
-            None => ask("create", &[tree, doc, name])?,
+            None => ask("create", &[tree, doc, &name])?,
         };
-        let mut files = self.0.borrow_mut();
-        let path = files.track(&uri, name)?;
-        files.used(tree, doc, folder_name);
+        copy("copyOut", path, &uri)?;
+        files.docs.insert(path.to_string(), uri);
+        files.synced.insert(path.to_string(), mtime(Path::new(path)));
+        files.used(tree, doc, &folder_name);
         files.store();
-        Ok(path.to_string_lossy().into_owned())
+        Ok(())
     }
 }

@@ -72,9 +72,12 @@ pub trait Folders {
     /// A local path to open `file` (in `folder`, called `folder_name`) from; saving it saves the
     /// file.
     fn open(&self, folder: &str, folder_name: &str, file: &FolderItem) -> Result<String, String>;
-    /// A local path to save `name` into `folder` at; what is written there goes to the folder.
+    /// A local path to write `name` at, for `folder`; nothing reaches the folder yet.
     /// `existing` is the file of that name to replace.
     fn save(&self, folder: &str, folder_name: &str, name: &str, existing: Option<&FolderItem>) -> Result<String, String>;
+    /// Puts what was written at `path` (from `save`) into its folder; from then on, saving the
+    /// workbook saves that file.
+    fn saved(&self, path: &str) -> Result<(), String>;
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).

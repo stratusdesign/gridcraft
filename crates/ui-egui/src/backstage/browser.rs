@@ -84,7 +84,10 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, state: &mut State, fmt: &str, out: 
         && let Some((id, _)) = state.trail.last()
     {
         state.listing = Some(folders.list(id).map(|mut items| {
-            items.retain(shown);
+            // Save As lists every file, so a name already taken (a PDF too) asks before replacing.
+            if !save {
+                items.retain(shown);
+            }
             items.sort_by(|a, b| b.folder.cmp(&a.folder).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
             items
         }));
@@ -263,11 +266,11 @@ fn save_bar(app: &mut SheetApp, ui: &mut Ui, state: &mut State, fmt: &str, out: 
         "html" => "file.exportHtml",
         _ => "file.save",
     };
-    match app.run(id, json!({"path": path})) {
-        Ok(_) => {
-            app.after_engine();
-            out.close = true;
-        }
-        Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+    let written = app.run(id, json!({"path": path.clone()})).map_err(|e| crate::clean_error(&e));
+    app.after_engine();
+    // Done only once the file is in the folder.
+    match written.and_then(|_| app.services.folders.as_ref().map_or(Ok(()), |f| f.saved(&path))) {
+        Ok(()) => out.close = true,
+        Err(e) => app.message = Some(("GridCraft".into(), format!("{name}: {e}"))),
     }
 }

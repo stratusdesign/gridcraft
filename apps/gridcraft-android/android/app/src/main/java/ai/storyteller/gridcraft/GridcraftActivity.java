@@ -94,7 +94,7 @@ public class GridcraftActivity extends NativeActivity {
         }
     }
 
-    /** A folder's contents: one line per item: id, name, d (folder) or f (file), split by unit separators. */
+    /** A folder's contents: a JSON list of [id, name, is a folder]. */
     public String list(String tree, String folder) {
         Uri t = Uri.parse(tree);
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(t, folder);
@@ -103,14 +103,16 @@ public class GridcraftActivity extends NativeActivity {
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
         };
-        StringBuilder out = new StringBuilder("+");
+        org.json.JSONArray out = new org.json.JSONArray();
         try (Cursor c = getContentResolver().query(children, cols, null, null, null)) {
             if (c == null) return "!this folder can't be read";
             while (c.moveToNext()) {
                 boolean dir = DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2));
-                out.append(c.getString(0)).append('\u001f').append(c.getString(1)).append('\u001f').append(dir ? 'd' : 'f').append('\n');
+                org.json.JSONArray item = new org.json.JSONArray();
+                item.put(c.getString(0)).put(c.getString(1)).put(dir);
+                out.put(item);
             }
-            return out.toString();
+            return "+" + out;
         } catch (Exception e) {
             return "!" + e.getMessage();
         }

@@ -34,6 +34,7 @@ impl eframe::App for App {
         self.0.ui(ui);
     }
     fn on_exit(&mut self) {
+        self.2.borrow_mut().sync_back(&mut self.0);
         save_prefs(&self.0, self.1.as_deref());
     }
 }
