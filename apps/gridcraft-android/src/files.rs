@@ -24,6 +24,8 @@ use serde_json::json;
 const OPEN: jint = 1;
 const SAVE: jint = 2;
 const TREE: jint = 3;
+/// A document handed over by "Open with" that GridCraft may only read.
+const OPEN_READ_ONLY: jint = 5;
 
 /// Picker answers waiting for the next frame: (kind, document uri, display name).
 static PICKED: Mutex<Vec<(jint, String, String)>> = Mutex::new(Vec::new());
@@ -198,6 +200,8 @@ pub struct Files {
     docs: HashMap<String, String>,
     /// working copy path → modification time last copied back
     synced: HashMap<String, Option<SystemTime>>,
+    /// Working copies whose copy back failed and is still owed (persisted in `unsynced.json`).
+    unsynced: std::collections::HashSet<String>,
     last_check: Instant,
 }
 
@@ -206,10 +210,13 @@ impl Files {
         let dir = data_dir.map(|d| d.join("docs"));
         let docs: HashMap<String, String> =
             dir.as_ref().and_then(|d| std::fs::read(d.join("docs.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let synced = docs.keys().map(|p| (p.clone(), mtime(Path::new(p)))).collect();
+        let unsynced: std::collections::HashSet<String> =
+            dir.as_ref().and_then(|d| std::fs::read(d.join("unsynced.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // A copy back still owed from last time counts as never written, so it is tried again.
+        let synced = docs.keys().map(|p| (p.clone(), if unsynced.contains(p) { None } else { mtime(Path::new(p)) })).collect();
         let places =
             dir.as_ref().and_then(|d| std::fs::read(d.join("places.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Files { dir, places, pending: HashMap::new(), docs, synced, last_check: Instant::now() }
+        Files { dir, places, pending: HashMap::new(), docs, synced, unsynced, last_check: Instant::now() }
     }
 
     fn store(&self) {
@@ -223,6 +230,11 @@ impl Files {
             && let Ok(b) = serde_json::to_vec_pretty(&self.places)
         {
             let _ = std::fs::write(d.join("places.json"), b);
+        }
+        if let Some(d) = &self.dir
+            && let Ok(b) = serde_json::to_vec_pretty(&self.unsynced)
+        {
+            let _ = std::fs::write(d.join("unsynced.json"), b);
         }
     }
 
@@ -273,12 +285,18 @@ impl Files {
         }
         let path = self.copy_path(uri, name).ok_or("no room for a working copy")?;
         let p = path.to_string_lossy().into_owned();
-        if kind == OPEN {
+        if kind == OPEN || kind == OPEN_READ_ONLY {
             copy("copyIn", uri, &p)?;
-            self.docs.insert(p.clone(), uri.to_string());
-            self.synced.insert(p.clone(), mtime(&path));
-            self.store();
+            // Read only: saving keeps the working copy; Save As puts it somewhere.
+            if kind == OPEN {
+                self.docs.insert(p.clone(), uri.to_string());
+                self.synced.insert(p.clone(), mtime(&path));
+                self.store();
+            }
             app.open_path(&p);
+            if kind == OPEN_READ_ONLY {
+                app.message = Some(("GridCraft".into(), format!("{name} was opened read only. Use Save As to keep your changes.")));
+            }
             return Ok(());
         }
         let Some((wanted, bytes)) = PENDING_SAVE.lock().ok().and_then(|mut s| s.take()) else { return Ok(()) };
@@ -310,10 +328,16 @@ impl Files {
             match copy("copyOut", p, uri) {
                 Ok(()) => {
                     self.synced.insert(p.clone(), now);
+                    if self.unsynced.remove(p) {
+                        self.store();
+                    }
                 }
+                // Not marked written: tried again at every check, and after a restart.
                 Err(e) => {
-                    self.synced.insert(p.clone(), now);
-                    failed = Some(format!("Saved here, but it couldn't be written back to the original file: {e}"));
+                    if self.unsynced.insert(p.clone()) {
+                        self.store();
+                        failed = Some(format!("Saved here, but it couldn't be written back to the original file yet (trying again): {e}"));
+                    }
                 }
             }
         }
