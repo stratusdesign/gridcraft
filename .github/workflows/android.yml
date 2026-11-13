@@ -39,7 +39,16 @@ jobs:
             build --release -p gridcraft-android
       - name: Package the APK
         working-directory: apps/gridcraft-android/android
-        run: gradle --no-daemon assembleDebug
+        # The fixed signing key (repo secrets), so a new build installs over the old one.
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          GC_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/gridcraft.p12"
+            export GC_KEYSTORE="$RUNNER_TEMP/gridcraft.p12"
+          fi
+          gradle --no-daemon assembleDebug
       - name: Name the APK
         run: cp apps/gridcraft-android/android/app/build/outputs/apk/debug/app-debug.apk gridcraft-android.apk
       - uses: actions/upload-artifact@v4
