@@ -11,6 +11,7 @@
 
 mod clipboard;
 mod files;
+mod print;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -79,6 +80,14 @@ fn android_main(android_app: AndroidApp) {
         open_async: Some(Box::new(files::pick_open)),
         download: Some(Box::new(files::save_bytes)),
         paste_text: Some(Box::new(clipboard::get)),
+        print: Some(Box::new({
+            let dir = prefs_dir.clone();
+            move |pdf: &[u8]| {
+                if let Err(e) = print::print(dir.as_deref(), "GridCraft workbook", pdf) {
+                    log::error!("print: {e}");
+                }
+            }
+        })),
         ..Default::default()
     };
     let mut app = SheetApp::new(Session::new(), services);
