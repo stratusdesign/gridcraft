@@ -9,6 +9,7 @@
 #![cfg(target_os = "android")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod clipboard;
 mod files;
 
 use std::cell::RefCell;
@@ -20,7 +21,7 @@ use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Services, SheetApp};
 
 /// One window holding every document, as on the web: Android has no separate desktop windows.
-struct App(SheetApp, Option<PathBuf>, Rc<RefCell<files::Files>>);
+struct App(SheetApp, Option<PathBuf>, Rc<RefCell<files::Files>>, clipboard::Bridge);
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -28,10 +29,12 @@ impl eframe::App for App {
         self.0.logic(ctx);
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.3.input(raw);
         self.0.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.ui(ui);
+        self.3.output(ui.ctx());
     }
     fn on_exit(&mut self) {
         self.2.borrow_mut().sync_back(&mut self.0);
@@ -75,6 +78,7 @@ fn android_main(android_app: AndroidApp) {
         folders: Some(Box::new(files::AndroidFolders(files.clone()))),
         open_async: Some(Box::new(files::pick_open)),
         download: Some(Box::new(files::save_bytes)),
+        paste_text: Some(Box::new(clipboard::get)),
         ..Default::default()
     };
     let mut app = SheetApp::new(Session::new(), services);
@@ -95,7 +99,7 @@ fn android_main(android_app: AndroidApp) {
             };
             SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
             files::set_context(&cc.egui_ctx);
-            Ok(Box::new(App(app, prefs_dir.clone(), files.clone())))
+            Ok(Box::new(App(app, prefs_dir.clone(), files.clone(), clipboard::Bridge::default())))
         }),
     );
     if let Err(e) = result {
